@@ -1,0 +1,198 @@
+name: Refresh OSRS Region Maps
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '20 5 * * 5'
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/refresh-regions.yml'
+      - 'generator/**'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: kspmaps-region-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout KSP Maps
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Java 11
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '11'
+          cache: gradle
+
+      - name: Select latest Old School cache
+        id: cache
+        shell: python
+        run: |
+          import json
+          import os
+          import urllib.request
+          from datetime import datetime
+
+          with urllib.request.urlopen('https://archive.openrs2.org/caches.json', timeout=60) as response:
+              caches = json.load(response)
+
+          candidates = []
+          for cache in caches:
+              if cache.get('game') != 'oldschool':
+                  continue
+              if cache.get('environment') != 'live' or cache.get('language') != 'en':
+                  continue
+              if cache.get('disk_store_valid') is False:
+                  continue
+
+              majors = [b.get('major') for b in cache.get('builds', []) if b.get('major') is not None]
+              build = max(majors) if majors else -1
+              timestamp = cache.get('timestamp') or ''
+              candidates.append((build, timestamp, int(cache['id']), cache.get('scope', 'runescape')))
+
+          if not candidates:
+              raise SystemExit('No usable Old School live English cache found in OpenRS2')
+
+          build, timestamp, cache_id, scope = max(candidates)
+          print(f'Selected OpenRS2 cache {scope}/{cache_id}, build {build}, timestamp {timestamp}')
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as out:
+              out.write(f'id={cache_id}\n')
+              out.write(f'scope={scope}\n')
+              out.write(f'build={build}\n')
+              out.write(f'timestamp={timestamp}\n')
+
+      - name: Download cache and XTEA keys
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .ksp-cache
+          BASE="https://archive.openrs2.org/caches/${{ steps.cache.outputs.scope }}/${{ steps.cache.outputs.id }}"
+          curl --fail --location --retry 4 --retry-delay 3 "$BASE/disk.zip" -o .ksp-cache/disk.zip
+          curl --fail --location --retry 4 --retry-delay 3 "$BASE/keys.json" -o .ksp-cache/openrs2-keys.json
+          unzip -q .ksp-cache/disk.zip -d .ksp-cache/extracted
+          test -d .ksp-cache/extracted/cache
+
+      - name: Convert OpenRS2 keys for RuneLite
+        shell: python
+        run: |
+          import json
+          from pathlib import Path
+
+          source = json.loads(Path('.ksp-cache/openrs2-keys.json').read_text(encoding='utf-8'))
+          by_region = {}
+          for item in source:
+              region = item.get('mapsquare')
+              key = item.get('key')
+              if region is None or not isinstance(key, list) or len(key) != 4:
+                  continue
+              by_region[int(region)] = [int(v) for v in key]
+
+          converted = [
+              {'region': region, 'keys': by_region[region]}
+              for region in sorted(by_region)
+          ]
+          Path('.ksp-cache/xteas.json').write_text(json.dumps(converted), encoding='utf-8')
+          print(f'Converted {len(converted)} validated map-square XTEA keys')
+
+      - name: Checkout RuneLite
+        uses: actions/checkout@v4
+        with:
+          repository: runelite/runelite
+          ref: master
+          path: .ksp-runelite
+          fetch-depth: 1
+
+      - name: Install KSP region dumper into RuneLite cache build
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARGET='.ksp-runelite/cache/src/main/java/net/runelite/cache/KspRegionDumper.java'
+          cp generator/KspRegionDumper.java "$TARGET"
+          cat > .ksp-runelite/.ksp-region-dumper.init.gradle <<'GRADLE'
+          gradle.afterProject { p, state ->
+              if (p.path == ':') {
+                  p.tasks.register('kspDumpRegions', JavaExec) {
+                      group = 'ksp maps'
+                      description = 'Exports RuneLite cache regions for KSP Maps'
+                      dependsOn p.tasks.named('classes')
+                      classpath = p.sourceSets.main.runtimeClasspath
+                      mainClass.set('net.runelite.cache.KspRegionDumper')
+
+                      def cacheDir = System.getProperty('ksp.cacheDir')
+                      def outputDir = System.getProperty('ksp.outputDir')
+                      def xteaPath = System.getProperty('ksp.xteaPath')
+                      args '--cachedir', cacheDir, '--outputdir', outputDir
+                      if (xteaPath != null && !xteaPath.trim().isEmpty()) {
+                          args '--xteapath', xteaPath
+                      }
+                  }
+              }
+          }
+          GRADLE
+
+      - name: Clear previously generated region images
+        shell: bash
+        run: |
+          set -euo pipefail
+          find data/regions -mindepth 1 -maxdepth 1 ! -name 'README.md' -exec rm -rf {} +
+
+      - name: Render all surface and dungeon regions
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x .ksp-runelite/gradlew
+          ROOT="$GITHUB_WORKSPACE"
+          .ksp-runelite/gradlew \
+            -p .ksp-runelite/cache \
+            -I "$ROOT/.ksp-runelite/.ksp-region-dumper.init.gradle" \
+            -Dksp.cacheDir="$ROOT/.ksp-cache/extracted/cache" \
+            -Dksp.outputDir="$ROOT/data/regions" \
+            -Dksp.xteaPath="$ROOT/.ksp-cache/xteas.json" \
+            kspDumpRegions \
+            --no-daemon
+
+      - name: Validate generated coverage
+        shell: python
+        run: |
+          import json
+          from pathlib import Path
+
+          manifest_path = Path('data/regions/manifest.json')
+          manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+          regions = manifest.get('regions', [])
+          if not regions:
+              raise SystemExit('Region generator produced an empty manifest')
+
+          images = list(Path('data/regions').glob('[0-3]/*.png'))
+          high_y = [r for r in regions if int(r.get('baseY', 0)) >= 6400]
+          print(f'Generated {len(images)} region-plane PNGs for {len(regions)} regions')
+          print(f'High-Y/dungeon-space regions: {len(high_y)}')
+          if not high_y:
+              raise SystemExit('No high-Y regions were generated; dungeon coverage check failed')
+
+      - name: Commit refreshed imagery
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A data/regions
+          if git diff --cached --quiet; then
+            echo 'Region imagery is already current.'
+            exit 0
+          fi
+          git commit -m "Refresh OSRS region maps (build ${{ steps.cache.outputs.build }})"
+          git push origin HEAD:main

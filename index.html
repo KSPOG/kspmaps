@@ -11,9 +11,11 @@
   <header class="toolbar">
     <div>
       <strong>KSP Maps</strong>
-      <span class="muted">OSRS coordinate + area selector</span>
+      <span class="muted">OSRS surface + dungeon coordinate/area selector</span>
     </div>
     <div class="controls">
+      <label>X <input id="goto-x" type="number" value="2915"></label>
+      <label>Y <input id="goto-y" type="number" value="3314"></label>
       <label>Plane
         <select id="plane">
           <option value="0">0</option>
@@ -22,9 +24,7 @@
           <option value="3">3</option>
         </select>
       </label>
-      <label>X <input id="goto-x" type="number" value="2915"></label>
-      <label>Y <input id="goto-y" type="number" value="3314"></label>
-      <button id="goto">Go</button>
+      <button id="goto">Go to WorldPoint</button>
       <button id="clear">Clear area</button>
       <button id="copy-world-area" disabled>Copy WorldArea</button>
     </div>
@@ -33,10 +33,12 @@
   <main>
     <div id="map"></div>
     <aside class="status-panel">
-      <div><span class="label">Hover</span><span id="hover">-</span></div>
+      <div><span class="label">Cursor</span><span id="hover">-</span></div>
       <div><span class="label">Region</span><span id="region">-</span></div>
+      <div><span class="label">World band</span><span id="world-band">-</span></div>
+      <div><span class="label">KSP region</span><span id="coverage">loading manifest…</span></div>
       <div><span class="label">Selection</span><span id="selection">Click two corner tiles</span></div>
-      <div><span class="label">Tile source</span><span>KSP first, Explv fallback</span></div>
+      <div><span class="label">Imagery</span><span>KSP region/TMS first, Explv fallback</span></div>
     </aside>
   </main>
 
