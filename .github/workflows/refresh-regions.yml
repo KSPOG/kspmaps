@@ -193,4 +193,5 @@ jobs:
             exit 0
           fi
           git commit -m "Refresh OSRS region maps (build ${{ steps.cache.outputs.build }})"
+          git pull --rebase origin main
           git push origin HEAD:main
