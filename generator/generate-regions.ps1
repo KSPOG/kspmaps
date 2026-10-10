@@ -32,7 +32,8 @@ New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 $OutputDir = (Resolve-Path $OutputDir).Path
 
 $source = Join-Path $PSScriptRoot "KspRegionDumper.java"
-$targetDir = Join-Path $RuneLiteDir "cache\src\main\java\net\runelite\cache"
+$cacheProjectDir = Join-Path $RuneLiteDir "cache"
+$targetDir = Join-Path $cacheProjectDir "src\main\java\net\runelite\cache"
 $target = Join-Path $targetDir "KspRegionDumper.java"
 $initScript = Join-Path $RuneLiteDir ".ksp-region-dumper.init.gradle"
 
@@ -41,7 +42,7 @@ Copy-Item $source $target -Force
 
 @'
 gradle.afterProject { p, state ->
-    if (p.path == ':cache') {
+    if (p.path == ':') {
         p.tasks.register('kspDumpRegions', JavaExec) {
             group = 'ksp maps'
             description = 'Exports RuneLite cache regions for KSP Maps'
@@ -63,26 +64,21 @@ gradle.afterProject { p, state ->
 '@ | Set-Content -Path $initScript -Encoding UTF8
 
 try {
-    Push-Location $RuneLiteDir
-    try {
-        $gradlew = Join-Path $RuneLiteDir "gradlew.bat"
-        $gradleArgs = @(
-            "-I", $initScript,
-            "-Dksp.cacheDir=$CacheDir",
-            "-Dksp.outputDir=$OutputDir"
-        )
-        if ($XteaPath) {
-            $gradleArgs += "-Dksp.xteaPath=$XteaPath"
-        }
-        $gradleArgs += ":cache:kspDumpRegions"
-
-        & $gradlew @gradleArgs
-        if ($LASTEXITCODE -ne 0) {
-            throw "RuneLite region export failed with exit code $LASTEXITCODE"
-        }
+    $gradlew = Join-Path $RuneLiteDir "gradlew.bat"
+    $gradleArgs = @(
+        "-p", $cacheProjectDir,
+        "-I", $initScript,
+        "-Dksp.cacheDir=$CacheDir",
+        "-Dksp.outputDir=$OutputDir"
+    )
+    if ($XteaPath) {
+        $gradleArgs += "-Dksp.xteaPath=$XteaPath"
     }
-    finally {
-        Pop-Location
+    $gradleArgs += "kspDumpRegions"
+
+    & $gradlew @gradleArgs
+    if ($LASTEXITCODE -ne 0) {
+        throw "RuneLite region export failed with exit code $LASTEXITCODE"
     }
 }
 finally {
