@@ -1,0 +1,1 @@
+The KSP region generator is designed to execute against RuneLite's cache module and uses RuneLite's `MapImageDumper` APIs. RuneLite's cache code is BSD-2-Clause licensed; retain upstream license notices when redistributing upstream source. KSP Maps does not copy RuneLite's `MapImageDumper.java` into this repository.
