@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>KSP Maps</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="toolbar">
+    <div>
+      <strong>KSP Maps</strong>
+      <span class="muted">OSRS coordinate + area selector</span>
+    </div>
+    <div class="controls">
+      <label>Plane
+        <select id="plane">
+          <option value="0">0</option>
+          <option value="1">1</option>
+          <option value="2">2</option>
+          <option value="3">3</option>
+        </select>
+      </label>
+      <label>X <input id="goto-x" type="number" value="2915"></label>
+      <label>Y <input id="goto-y" type="number" value="3314"></label>
+      <button id="goto">Go</button>
+      <button id="clear">Clear area</button>
+      <button id="copy-world-area" disabled>Copy WorldArea</button>
+    </div>
+  </header>
+
+  <main>
+    <div id="map"></div>
+    <aside class="status-panel">
+      <div><span class="label">Hover</span><span id="hover">-</span></div>
+      <div><span class="label">Region</span><span id="region">-</span></div>
+      <div><span class="label">Selection</span><span id="selection">Click two corner tiles</span></div>
+      <div><span class="label">Tile source</span><span>KSP first, Explv fallback</span></div>
+    </aside>
+  </main>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
