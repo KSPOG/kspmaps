@@ -1,0 +1,1 @@
+KSP Maps generated RuneLite region imagery is stored under `data/regions/<plane>/<regionId>.png`. This directory is populated by the generator; see `generator/README.md`. High-Y world regions (including dungeons and underground maps) are intentionally included and are not filtered out.
