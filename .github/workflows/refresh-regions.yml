@@ -16,7 +16,7 @@ permissions:
 
 concurrency:
   group: kspmaps-region-refresh
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   refresh:
