@@ -1,0 +1,77 @@
+name: Validate KSP Maps
+
+on:
+  pull_request:
+    paths:
+      - 'app.js'
+      - 'index.html'
+      - 'styles.css'
+      - 'generator/**'
+      - 'data/regions/manifest.json'
+      - '.github/workflows/validate-map.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'app.js'
+      - 'index.html'
+      - 'styles.css'
+      - 'generator/**'
+      - 'data/regions/manifest.json'
+      - '.github/workflows/validate-map.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout KSP Maps
+        uses: actions/checkout@v4
+        with:
+          path: kspmaps
+
+      - name: Check web JavaScript
+        working-directory: kspmaps
+        run: node --check app.js
+
+      - name: Validate region manifest
+        working-directory: kspmaps
+        shell: python
+        run: |
+          import json
+          from pathlib import Path
+
+          manifest = json.loads(Path('data/regions/manifest.json').read_text(encoding='utf-8'))
+          assert manifest['version'] == 1
+          assert manifest['regionSize'] == 64
+          assert manifest['mapScale'] == 4
+          assert manifest['planes'] == [0, 1, 2, 3]
+          assert isinstance(manifest['regions'], list)
+
+      - name: Checkout current RuneLite
+        uses: actions/checkout@v4
+        with:
+          repository: runelite/runelite
+          ref: master
+          path: runelite
+          fetch-depth: 1
+
+      - name: Set up Java 11
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '11'
+          cache: gradle
+
+      - name: Inject KSP region dumper
+        run: cp kspmaps/generator/KspRegionDumper.java runelite/cache/src/main/java/net/runelite/cache/KspRegionDumper.java
+
+      - name: Compile RuneLite cache module with KSP dumper
+        run: |
+          chmod +x runelite/gradlew
+          runelite/gradlew -p runelite/cache classes --no-daemon
