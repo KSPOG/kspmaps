@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.List;
 import javax.imageio.ImageIO;
 import net.runelite.cache.fs.Store;
+import net.runelite.cache.region.Location;
 import net.runelite.cache.region.Region;
 import net.runelite.cache.region.RegionLoader;
 import net.runelite.cache.util.XteaKeyManager;
@@ -19,7 +20,7 @@ import net.runelite.cache.util.XteaKeyManager;
  *
  * This class intentionally lives in net.runelite.cache so it can be injected
  * into a RuneLite checkout and use RuneLite's MapImageDumper directly.
- * It exports every loaded region on every available plane, including high-Y
+ * It exports every loaded region on every populated plane, including high-Y
  * world coordinates used by dungeons and other underground maps.
  */
 public final class KspRegionDumper
@@ -69,6 +70,8 @@ public final class KspRegionDumper
                 .setRenderOverlays(true);
             dumper.load();
 
+            int processed = 0;
+            int total = regionLoader.getRegions().size();
             for (Region region : regionLoader.getRegions())
             {
                 ManifestRegion item = new ManifestRegion(
@@ -76,6 +79,15 @@ public final class KspRegionDumper
 
                 for (int plane = 0; plane < Region.Z; plane++)
                 {
+                    // Plane 0 can contain procedural terrain even with no explicit
+                    // overlay/underlay, so always render it. For upper planes, a
+                    // quick tile/object scan avoids rendering thousands of known-
+                    // empty 256x256 images before the alpha check.
+                    if (plane > 0 && !planeLikelyVisible(region, plane))
+                    {
+                        continue;
+                    }
+
                     BufferedImage image = dumper.drawRegion(region, plane);
                     if (!hasVisiblePixel(image))
                     {
@@ -97,11 +109,43 @@ public final class KspRegionDumper
                 {
                     manifest.add(item);
                 }
+
+                processed++;
+                if (processed % 100 == 0 || processed == total)
+                {
+                    System.out.println("KSP Maps: rendered " + processed + "/" + total + " cache regions");
+                }
             }
         }
 
         writeManifest(new File(output, "manifest.json"), manifest);
         System.out.println("KSP Maps: exported " + manifest.size() + " populated regions to " + output);
+    }
+
+    private static boolean planeLikelyVisible(Region region, int plane)
+    {
+        for (int x = 0; x < Region.X; x++)
+        {
+            for (int y = 0; y < Region.Y; y++)
+            {
+                if (region.getUnderlayId(plane, x, y) != 0
+                    || region.getOverlayId(plane, x, y) != 0
+                    || region.getTileSetting(plane, x, y) != 0)
+                {
+                    return true;
+                }
+            }
+        }
+
+        for (Location location : region.getLocations())
+        {
+            if (location.getPosition().getZ() == plane)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static boolean hasVisiblePixel(BufferedImage image)
