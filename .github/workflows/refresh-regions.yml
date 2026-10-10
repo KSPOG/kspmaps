@@ -34,7 +34,6 @@ jobs:
         with:
           distribution: temurin
           java-version: '11'
-          cache: gradle
 
       - name: Select latest Old School cache
         id: cache
@@ -43,7 +42,6 @@ jobs:
           import json
           import os
           import urllib.request
-          from datetime import datetime
 
           with urllib.request.urlopen('https://archive.openrs2.org/caches.json', timeout=60) as response:
               caches = json.load(response)
