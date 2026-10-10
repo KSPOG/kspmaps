@@ -25,6 +25,12 @@ import net.runelite.cache.util.XteaKeyManager;
  */
 public final class KspRegionDumper
 {
+    private static final int MAP_SCALE = 4;
+    private static final int DUNGEON_Y_THRESHOLD = 6400;
+    private static final int DARK_PIXEL_THRESHOLD = 20;
+    private static final int DARK_PIXELS_REQUIRED = 12;
+    private static final int DUNGEON_FLOOR_FALLBACK = 0xFF2F2923;
+
     private KspRegionDumper()
     {
     }
@@ -60,11 +66,9 @@ public final class KspRegionDumper
             regionLoader.loadRegions();
 
             // MapImageDumper's terrain colours are primarily 24-bit RGB values.
-            // When transparency is enabled those values are written to ARGB with
-            // alpha 0, making the actual floor/terrain disappear while walls,
-            // doors and icons remain visible. Region images are therefore rendered
-            // opaque; dungeon void remains black, matching RuneLite/Explv-style
-            // underground maps and allowing neighbouring regions to stitch cleanly.
+            // Region images must therefore be opaque. With transparency enabled,
+            // a large amount of floor terrain is written with alpha 0 while
+            // walls/objects remain visible.
             MapImageDumper dumper = new MapImageDumper(store, regionLoader)
                 .setTransparency(false)
                 .setLabelRegions(false)
@@ -95,6 +99,19 @@ public final class KspRegionDumper
                     }
 
                     BufferedImage image = dumper.drawRegion(region, plane);
+
+                    // A number of high-Y dungeon floor definitions resolve to
+                    // black/near-black in RuneLite's cache map renderer. Against
+                    // the black dungeon void this makes valid rooms appear to have
+                    // no floor at all. Only repair tiles which actually contain
+                    // terrain metadata, and only when at least 75% of that 4x4
+                    // map-tile block is nearly black. Existing walls, objects,
+                    // icons and partial overlay shapes remain untouched.
+                    if (region.getBaseY() >= DUNGEON_Y_THRESHOLD)
+                    {
+                        enhanceDungeonFloorVisibility(image, region, plane);
+                    }
+
                     if (!hasVisiblePixel(image))
                     {
                         continue;
@@ -126,6 +143,72 @@ public final class KspRegionDumper
 
         writeManifest(new File(output, "manifest.json"), manifest);
         System.out.println("KSP Maps: exported " + manifest.size() + " populated regions to " + output);
+    }
+
+    private static void enhanceDungeonFloorVisibility(BufferedImage image, Region region, int plane)
+    {
+        int repairedTiles = 0;
+
+        for (int tileX = 0; tileX < Region.X; tileX++)
+        {
+            for (int tileY = 0; tileY < Region.Y; tileY++)
+            {
+                if (region.getUnderlayId(plane, tileX, tileY) == 0
+                    && region.getOverlayId(plane, tileX, tileY) == 0)
+                {
+                    continue;
+                }
+
+                int pixelX = tileX * MAP_SCALE;
+                int pixelY = (Region.Y - 1 - tileY) * MAP_SCALE;
+                int darkPixels = 0;
+
+                for (int dy = 0; dy < MAP_SCALE; dy++)
+                {
+                    for (int dx = 0; dx < MAP_SCALE; dx++)
+                    {
+                        if (isNearlyBlack(image.getRGB(pixelX + dx, pixelY + dy)))
+                        {
+                            darkPixels++;
+                        }
+                    }
+                }
+
+                if (darkPixels < DARK_PIXELS_REQUIRED)
+                {
+                    continue;
+                }
+
+                for (int dy = 0; dy < MAP_SCALE; dy++)
+                {
+                    for (int dx = 0; dx < MAP_SCALE; dx++)
+                    {
+                        int x = pixelX + dx;
+                        int y = pixelY + dy;
+                        if (isNearlyBlack(image.getRGB(x, y)))
+                        {
+                            image.setRGB(x, y, DUNGEON_FLOOR_FALLBACK);
+                        }
+                    }
+                }
+                repairedTiles++;
+            }
+        }
+
+        if (repairedTiles > 0)
+        {
+            System.out.println("KSP Maps: repaired " + repairedTiles
+                + " dark dungeon floor tiles in region " + region.getRegionID()
+                + " plane " + plane);
+        }
+    }
+
+    private static boolean isNearlyBlack(int rgb)
+    {
+        int red = (rgb >>> 16) & 0xff;
+        int green = (rgb >>> 8) & 0xff;
+        int blue = rgb & 0xff;
+        return Math.max(red, Math.max(green, blue)) <= DARK_PIXEL_THRESHOLD;
     }
 
     private static boolean planeLikelyVisible(Region region, int plane)
