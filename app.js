@@ -4,6 +4,7 @@ const MAP_HEIGHT_MAX_ZOOM_PX = 364544;
 const RS_TILE_PX = 32;
 const RS_OFFSET_X = 960;
 const RS_OFFSET_Y = 6208;
+const REGION_SIZE = 64;
 
 const params = new URLSearchParams(location.search);
 let plane = clampPlane(Number(params.get('centreZ') ?? 0));
@@ -13,6 +14,11 @@ let hoverRect = null;
 let selectionRect = null;
 let selectionLabels = [];
 let gridLayers = [];
+let tileLayer = null;
+let regionManifestLoaded = false;
+
+const regionManifest = new Map();
+const regionOverlays = new Map();
 
 const map = L.map('map', {
   minZoom: MIN_ZOOM,
@@ -22,17 +28,23 @@ const map = L.map('map', {
   preferCanvas: true
 });
 
+map.createPane('kspRegions');
+map.getPane('kspRegions').style.zIndex = 250;
+map.getPane('kspRegions').style.pointerEvents = 'none';
+
 map.attributionControl.addAttribution('KSP Maps');
-map.attributionControl.addAttribution('Fallback imagery: Explv/osrs_map_tiles');
+map.attributionControl.addAttribution('RuneLite region imagery + Explv fallback');
 
 const planeSelect = document.querySelector('#plane');
+const gotoX = document.querySelector('#goto-x');
+const gotoY = document.querySelector('#goto-y');
 const hoverEl = document.querySelector('#hover');
 const regionEl = document.querySelector('#region');
+const worldBandEl = document.querySelector('#world-band');
+const coverageEl = document.querySelector('#coverage');
 const selectionEl = document.querySelector('#selection');
 const copyWorldArea = document.querySelector('#copy-world-area');
 planeSelect.value = String(plane);
-
-let tileLayer = null;
 
 function clampPlane(value) {
   return Number.isFinite(value) ? Math.max(0, Math.min(3, Math.trunc(value))) : 0;
@@ -61,13 +73,61 @@ function regionInfo(p) {
   const regionY = p.y >> 6;
   return {
     id: (regionX << 8) | regionY,
+    regionX,
+    regionY,
+    baseX: regionX << 6,
+    baseY: regionY << 6,
     x: p.x & 63,
     y: p.y & 63
   };
 }
 
+function worldBand(y) {
+  return y >= 6400
+    ? 'High-Y world space (commonly dungeons/underground)'
+    : 'Main world coordinate space';
+}
+
 function tileBounds(p) {
   return L.latLngBounds(positionToLatLng(p.x, p.y), positionToLatLng(p.x + 1, p.y + 1));
+}
+
+function regionBounds(baseX, baseY) {
+  return L.latLngBounds(
+    positionToLatLng(baseX, baseY),
+    positionToLatLng(baseX + REGION_SIZE, baseY + REGION_SIZE)
+  );
+}
+
+function manifestHasRegion(regionId, targetPlane = plane) {
+  const entry = regionManifest.get(regionId);
+  return !!entry && entry.planes.includes(targetPlane);
+}
+
+async function loadRegionManifest() {
+  try {
+    const response = await fetch('data/regions/manifest.json', { cache: 'no-cache' });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const manifest = await response.json();
+
+    regionManifest.clear();
+    for (const region of manifest.regions ?? []) {
+      regionManifest.set(Number(region.id), {
+        id: Number(region.id),
+        baseX: Number(region.baseX),
+        baseY: Number(region.baseY),
+        planes: (region.planes ?? []).map(Number)
+      });
+    }
+
+    regionManifestLoaded = true;
+    coverageEl.textContent = `${regionManifest.size} generated regions indexed`;
+    updateRegionOverlays();
+  } catch (error) {
+    regionManifestLoaded = true;
+    coverageEl.textContent = 'manifest unavailable — using tile fallback';
+    console.warn('KSP region manifest unavailable', error);
+  }
 }
 
 function installTiles() {
@@ -93,6 +153,56 @@ function installTiles() {
   });
 
   tileLayer.addTo(map);
+}
+
+function clearRegionOverlays() {
+  for (const overlay of regionOverlays.values()) map.removeLayer(overlay);
+  regionOverlays.clear();
+}
+
+function updateRegionOverlays() {
+  if (!map._loaded || !regionManifestLoaded) return;
+
+  const bounds = map.getBounds();
+  const nw = latLngToPosition(bounds.getNorthWest());
+  const se = latLngToPosition(bounds.getSouthEast());
+  const minX = Math.min(nw.x, se.x);
+  const maxX = Math.max(nw.x, se.x);
+  const minY = Math.min(nw.y, se.y);
+  const maxY = Math.max(nw.y, se.y);
+
+  const minRegionX = Math.floor(minX / REGION_SIZE) - 1;
+  const maxRegionX = Math.floor(maxX / REGION_SIZE) + 1;
+  const minRegionY = Math.floor(minY / REGION_SIZE) - 1;
+  const maxRegionY = Math.floor(maxY / REGION_SIZE) + 1;
+  const wanted = new Set();
+
+  for (let rx = minRegionX; rx <= maxRegionX; rx++) {
+    for (let ry = minRegionY; ry <= maxRegionY; ry++) {
+      if (rx < 0 || ry < 0 || rx > 255 || ry > 255) continue;
+      const regionId = (rx << 8) | ry;
+      if (!manifestHasRegion(regionId, plane)) continue;
+
+      const key = `${plane}:${regionId}`;
+      wanted.add(key);
+      if (regionOverlays.has(key)) continue;
+
+      const entry = regionManifest.get(regionId);
+      const overlay = L.imageOverlay(
+        `data/regions/${plane}/${regionId}.png`,
+        regionBounds(entry.baseX, entry.baseY),
+        { pane: 'kspRegions', opacity: 1, interactive: false }
+      ).addTo(map);
+      regionOverlays.set(key, overlay);
+    }
+  }
+
+  for (const [key, overlay] of regionOverlays.entries()) {
+    if (!wanted.has(key)) {
+      map.removeLayer(overlay);
+      regionOverlays.delete(key);
+    }
+  }
 }
 
 function clearGrid() {
@@ -123,7 +233,6 @@ function updateGrid() {
   const minY = Math.min(nw.y, se.y) - 2;
   const maxY = Math.max(nw.y, se.y) + 2;
 
-  // Avoid thousands of DOM/canvas objects when zoomed far out.
   const step = zoom >= 10 ? 1 : zoom >= 8 ? 8 : 64;
   const startX = Math.floor(minX / step) * step;
   const startY = Math.floor(minY / step) * step;
@@ -159,6 +268,10 @@ function setHover(p) {
   const region = regionInfo(p);
   hoverEl.textContent = `(${p.x}, ${p.y}, ${p.z})`;
   regionEl.textContent = `${region.id}  local (${region.x}, ${region.y})`;
+  worldBandEl.textContent = worldBand(p.y);
+  coverageEl.textContent = manifestHasRegion(region.id)
+    ? `region ${region.id}, plane ${plane}: KSP RuneLite image`
+    : `region ${region.id}, plane ${plane}: fallback/not generated`;
 }
 
 function removeSelectionVisuals() {
@@ -216,7 +329,10 @@ function clearSelection() {
 }
 
 function centreOn(x, y, zoom = map.getZoom()) {
-  map.setView(positionCentreToLatLng(x, y), Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, Number(zoom) || 10)));
+  map.setView(
+    positionCentreToLatLng(x, y),
+    Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, Number(zoom) || 10))
+  );
 }
 
 function updateUrl() {
@@ -235,21 +351,31 @@ map.on('mousemove', event => setHover(latLngToPosition(event.latlng)));
 map.on('click', event => selectPoint(latLngToPosition(event.latlng)));
 map.on('moveend zoomend', () => {
   updateGrid();
+  updateRegionOverlays();
   updateUrl();
 });
 
 planeSelect.addEventListener('change', () => {
   plane = clampPlane(Number(planeSelect.value));
   clearSelection();
+  clearRegionOverlays();
   installTiles();
   updateGrid();
+  updateRegionOverlays();
   updateUrl();
 });
 
 document.querySelector('#goto').addEventListener('click', () => {
-  const x = Number(document.querySelector('#goto-x').value);
-  const y = Number(document.querySelector('#goto-y').value);
-  if (Number.isFinite(x) && Number.isFinite(y)) centreOn(x, y);
+  const x = Number(gotoX.value);
+  const y = Number(gotoY.value);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+
+  plane = clampPlane(Number(planeSelect.value));
+  planeSelect.value = String(plane);
+  clearSelection();
+  clearRegionOverlays();
+  installTiles();
+  centreOn(x, y);
 });
 
 document.querySelector('#clear').addEventListener('click', clearSelection);
@@ -271,5 +397,8 @@ installTiles();
 const initialX = Number(params.get('centreX') ?? 2915);
 const initialY = Number(params.get('centreY') ?? 3314);
 const initialZoom = Number(params.get('zoom') ?? 7);
+gotoX.value = String(initialX);
+gotoY.value = String(initialY);
 centreOn(initialX, initialY, initialZoom);
 updateSelection();
+loadRegionManifest();
