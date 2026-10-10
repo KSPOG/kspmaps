@@ -59,8 +59,14 @@ public final class KspRegionDumper
             RegionLoader regionLoader = new RegionLoader(store, keys);
             regionLoader.loadRegions();
 
+            // MapImageDumper's terrain colours are primarily 24-bit RGB values.
+            // When transparency is enabled those values are written to ARGB with
+            // alpha 0, making the actual floor/terrain disappear while walls,
+            // doors and icons remain visible. Region images are therefore rendered
+            // opaque; dungeon void remains black, matching RuneLite/Explv-style
+            // underground maps and allowing neighbouring regions to stitch cleanly.
             MapImageDumper dumper = new MapImageDumper(store, regionLoader)
-                .setTransparency(true)
+                .setTransparency(false)
                 .setLabelRegions(false)
                 .setOutlineRegions(false)
                 .setRenderLabels(true)
@@ -82,7 +88,7 @@ public final class KspRegionDumper
                     // Plane 0 can contain procedural terrain even with no explicit
                     // overlay/underlay, so always render it. For upper planes, a
                     // quick tile/object scan avoids rendering thousands of known-
-                    // empty 256x256 images before the alpha check.
+                    // empty 256x256 images before the pixel check.
                     if (plane > 0 && !planeLikelyVisible(region, plane))
                     {
                         continue;
@@ -150,17 +156,24 @@ public final class KspRegionDumper
 
     private static boolean hasVisiblePixel(BufferedImage image)
     {
-        for (int y = 0; y < image.getHeight(); y++)
+        if (image.getColorModel().hasAlpha())
         {
-            for (int x = 0; x < image.getWidth(); x++)
+            for (int y = 0; y < image.getHeight(); y++)
             {
-                if (((image.getRGB(x, y) >>> 24) & 0xff) != 0)
+                for (int x = 0; x < image.getWidth(); x++)
                 {
-                    return true;
+                    if (((image.getRGB(x, y) >>> 24) & 0xff) != 0)
+                    {
+                        return true;
+                    }
                 }
             }
+            return false;
         }
-        return false;
+
+        // Opaque RGB region images are always drawable once RuneLite rendered
+        // them. Upper planes have already been filtered by planeLikelyVisible().
+        return true;
     }
 
     private static void writeManifest(File file, List<ManifestRegion> regions) throws IOException
